@@ -25,7 +25,11 @@ import urllib.request
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-DIR = os.path.abspath(os.path.dirname(__file__))
+if getattr(sys, 'frozen', False):
+    DIR = os.path.dirname(sys.executable)
+elif __file__:
+    DIR = os.path.dirname(__file__)
+DIR = os.path.abspath(DIR)
 
 # make sure our working directory for this server is the same as this file is in
 os.chdir(DIR)
@@ -74,12 +78,6 @@ filetypes = {
     'woff2',
 }
 
-AUTH_PATH_PREFIXES = (
-    '/_api/authenticate', 
-    '/_api/check-hashes', 
-    '/_portal/api/annotations', 
-    '/_portal/api/share'
-)
 HISTORICAL_VERSIONS_PATH_PREFIXES = ('/_publication', '/_date', '/_compare', )
 PORTAL_PATH_PREFIXES = ('/_portal', '/_api') + HISTORICAL_VERSIONS_PATH_PREFIXES
 
@@ -111,10 +109,17 @@ def download_static_assets(static_assets_repo_url=STATIC_ASSETS_REPO_URL, force=
             if not os.environ.get('PYTHONHTTPSVERIFY', '') and getattr(ssl, '_create_unverified_context', None):
                 ssl._create_default_https_context = ssl._create_unverified_context
 
-        ZIP_URL = "{}/archive/master.zip".format(static_assets_repo_url)
 
+        ZIP_URL = "{}/archive/main.zip".format(static_assets_repo_url)
+        BACKUP_ZIP_URL = "{}/archive/master.zip".format(static_assets_repo_url)
         _fix_cert()
-        data = urllib.request.urlopen(ZIP_URL)
+        try:
+            data = urllib.request.urlopen(ZIP_URL)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                data = urllib.request.urlopen(BACKUP_ZIP_URL)
+            else:
+                raise e
 
         with ZipFile(BytesIO(data.read())) as zip_file:
             files = zip_file.namelist()
@@ -206,7 +211,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
-        if self.path in AUTH_PATH_PREFIXES:
+        if self.path.startswith(PORTAL_PATH_PREFIXES):
             content_len = int(self.headers.get('Content-Length'))
             body = self.rfile.read(content_len)
             return self._proxy(PORTAL_CLIENT_CLASS, PORTAL_HOST, 'portal', method='POST', body=body)
@@ -268,6 +273,8 @@ class RequestHandler(SimpleHTTPRequestHandler):
         elif os.path.isdir(path):
             index_page = os.path.join(path, 'index.html')
             return index_page
+        else:
+            return path
 
     def end_headers(self):
         # Commenting this since proxied response from the portal already contains
@@ -276,6 +283,15 @@ class RequestHandler(SimpleHTTPRequestHandler):
         # self.send_header('Access-Control-Allow-Origin', '*')
         SimpleHTTPRequestHandler.end_headers(self)
 
+    def address_string(self):
+        """
+        This function is used for logging. We comment out getfqdn because,
+        on windows, getfqdn is very slow - it will make multiple DNS 
+        requests that each time out after many seconds.
+        """
+        host, _ = self.client_address[:2]
+        #return socket.getfqdn(host)
+        return host
 
 def get_http_client_info(upstream_name, url):
     """
